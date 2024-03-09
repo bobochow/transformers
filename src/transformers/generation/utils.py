@@ -1241,6 +1241,7 @@ class GenerationMixin:
         
         images_cd: Optional[torch.FloatTensor] = None,
         input_ids_ncd: torch.LongTensor = None,
+        attention_mask_ncd: Optional[torch.Tensor] = None,
         cd_beta: Optional[torch.FloatTensor] = None,
         cd_alpha: Optional[torch.FloatTensor] = None,
         
@@ -1569,7 +1570,7 @@ class GenerationMixin:
                 **model_kwargs,
             )
 
-        elif generation_mode == GenerationMode.SAMPLE and images_cd != none:
+        elif generation_mode == GenerationMode.SAMPLE and images_cd != None:
             # 11. prepare logits warper
             logits_warper = self._get_logits_warper(generation_config)
 
@@ -1611,8 +1612,8 @@ class GenerationMixin:
                 **model_kwargs,
             )
 
-            # 13. run sample
-            result = self._sample(
+            # 13. run ncd_sample
+            result = self.ncd_sample(
                 input_ids,
                 logits_processor=prepared_logits_processor,
                 logits_warper=logits_warper,
@@ -1625,6 +1626,7 @@ class GenerationMixin:
                 synced_gpus=synced_gpus,
                 streamer=streamer,
                 input_ids_ncd = input_ids_ncd,
+                attention_mask_ncd = attention_mask_ncd,
                 cd_beta = cd_beta,
                 cd_alpha = cd_alpha,
                 **model_kwargs,
@@ -3101,6 +3103,8 @@ class GenerationMixin:
 
         # keep track of which sequences are already finished
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+        model_kwargs_cd = model_kwargs.copy()
+        model_kwargs_cd["pixel_values"] = images_cd
 
         this_peer_finished = False  # used by synced_gpus only
         # auto-regressive generation
@@ -3139,11 +3143,10 @@ class GenerationMixin:
             output_hidden_states_wo_img = (
                 output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states
             )
-            model_kwargs_cd = model_kwargs.copy()
             
             
             ## cd_comments: forward pass of the model with distorted image input
-            model_inputs_cd = self.prepare_inputs_for_generation(input_ids, pixel_values=images_cd, **model_kwargs_cd)
+            model_inputs_cd = self.prepare_inputs_for_generation(input_ids, **model_kwargs_cd)
             outputs_cd = self(
                 **model_inputs_cd,
                 return_dict=True,
@@ -3213,7 +3216,7 @@ class GenerationMixin:
             ## cd_comments: update model_kwargs_cd for contrastive decoding
             
             model_kwargs_cd = self._update_model_kwargs_for_generation(
-                outputs_cd, model_kwargs_cd, is_encoder_decoder=self.config.is_encoder_decoder
+                outputs_cd, model_kwargs_cd, is_encoder_decoder=self.config.is_encoder_decoder,model_inputs=model_inputs_cd
             )
 
             # if eos_token was found in one sentence, set sentence to finished
@@ -3276,6 +3279,7 @@ class GenerationMixin:
         synced_gpus: bool = False,
         streamer: Optional["BaseStreamer"] = None,
         input_ids_ncd: torch.LongTensor = None,
+        attention_mask_ncd: Optional[torch.Tensor] = None,
         cd_beta: Optional[torch.FloatTensor] = None,
         cd_alpha: Optional[torch.FloatTensor] = None,
         **model_kwargs,
@@ -3441,7 +3445,9 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
         unfinished_sequences_cd = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
         model_kwargs_cd = model_kwargs.copy()
-
+        # model_kwargs_cd["input_ids"] = input_ids_ncd
+        model_kwargs_cd['attention_mask'] = attention_mask_ncd
+        
         this_peer_finished = False  # used by synced_gpus only
         # auto-regressive generation
         while True:
@@ -3484,10 +3490,9 @@ class GenerationMixin:
             # cd_alpha = model_kwargs.get("cd_alpha") if model_kwargs.get("cd_alpha") is not None else 0.5
             # cd_beta = model_kwargs.get("cd_beta") if model_kwargs.get("cd_beta") is not None else 0.1
             
-            model_kwargs_cd['attention_mask'] = torch.ones_like(input_ids_ncd)
             
             ## cd_comments: forward pass of the model with negated text input
-            model_inputs_cd = self.prepare_inputs_for_generation_cd(input_ids_ncd, **model_kwargs_cd)
+            model_inputs_cd = self.prepare_inputs_for_generation(input_ids_ncd, **model_kwargs_cd)
             
             outputs_cd = self(
                 **model_inputs_cd,
@@ -3561,7 +3566,7 @@ class GenerationMixin:
             ## cd_comments: update model_kwargs_cd for contrastive decoding
             
             model_kwargs_cd = self._update_model_kwargs_for_generation(
-                    outputs_cd, model_kwargs_cd, is_encoder_decoder=self.config.is_encoder_decoder
+                    outputs_cd, model_kwargs_cd, is_encoder_decoder=self.config.is_encoder_decoder, model_inputs=model_inputs_cd
             )
             
 
